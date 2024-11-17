@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-
 const axios = require("axios");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmetadata = require("ffmetadata");
@@ -22,6 +21,27 @@ const OUTPUT_DIR = path.join(
 const STREAM_KEY = "fkz1-p7w2-scd0-v5df-csxe";
 const STREAM_URL = "rtmp://a.rtmp.youtube.com/live2";
 const VIDEO_FILE = path.join(__dirname, "background/video.mp4"); // Video de fundo
+
+// Variável para rastrear o último dia
+let lastDate = new Date().toISOString().split("T")[0];
+
+// Função para limpar o diretório
+const cleanDirectory = (dir) => {
+  if (fs.existsSync(dir)) {
+    fs.readdirSync(dir).forEach((file) => {
+      const filePath = path.join(dir, file);
+      if (fs.lstatSync(filePath).isDirectory()) {
+        cleanDirectory(filePath); // Recursivamente limpa subdiretórios
+      } else {
+        fs.unlinkSync(filePath); // Remove arquivos
+      }
+    });
+    console.log(`Diretório limpo: ${dir}`);
+  } else {
+    console.log(`Diretório não existe, criando: ${dir}`);
+    fs.mkdirSync(dir, { recursive: true });
+  }
+};
 
 // Função para buscar e baixar músicas
 const downloadMusic = async (searchTerm) => {
@@ -50,7 +70,6 @@ const downloadMusic = async (searchTerm) => {
 
       const track = entities[trackId];
 
-      // Acessando o título e o artista corretamente
       const title = track?.title;
       const artist = track?.creatives?.mainArtists?.[0]?.name;
 
@@ -81,7 +100,6 @@ const downloadMusic = async (searchTerm) => {
           writer.on("error", reject);
         });
 
-        // Adicionar metadados no arquivo baixado
         const metadata = {
           title: title,
           artist: artist,
@@ -173,46 +191,69 @@ const combineTracks = async (outputDir, tracks) => {
 };
 
 // Função para iniciar o streaming
-const startStreaming = (combinedFile) => {
-  ffmpeg()
-    .input(combinedFile)
-    .inputOptions(["-stream_loop -1"])
-    .input(VIDEO_FILE)
-    .inputOptions(["-stream_loop -1"])
-    .addOption("-filter_complex", "[1:v]scale=-1:1080[v]")
-    .addOption("-map", "[v]")
-    .addOption("-map", "0:a")
-    .videoCodec("libx264")
-    .audioCodec("aac")
-    .addOption("-b:a", "128k")
-    .addOption("-pix_fmt", "yuv420p")
-    .addOption("-preset", "medium")
-    .addOption("-g", "50")
-    .addOption("-sc_threshold", "0")
-    .addOption("-profile:v", "baseline")
-    .addOption("-b:v", "4000k")
-    .addOption("-maxrate", "4000k")
-    .addOption("-bufsize", "4000k")
-    .addOption("-shortest")
-    .addOption("-threads", "0")
-    .addOption("-r", "30")
-    .addOption("-video_size", "1920x1080")
-    .format("flv")
-    .output(`${STREAM_URL}/${STREAM_KEY}`)
-    .on("start", () => {
-      console.log("Transmissão iniciada.");
-    })
-    .on("error", (err) => {
-      console.error("Erro na transmissão:", err.message);
-    })
-    .on("end", () => {
-      console.log("Transmissão encerrada.");
-    })
-    .run();
+const startStreaming = async (combinedFile) => {
+  try {
+    const convertedVideoPath = path.join(__dirname, "background/converted_video.mp4");
+    const convertedAudioPath = path.join(
+      path.dirname(combinedFile),
+      "converted_audio.mp3"
+    );
+
+    // Converter arquivos, se necessário
+    if (!fs.existsSync(convertedVideoPath)) {
+      console.log("Convertendo vídeo de fundo...");
+      await convertFile(VIDEO_FILE, convertedVideoPath, "video");
+    }
+    console.log("Convertendo áudio combinado...");
+    await convertFile(combinedFile, convertedAudioPath, "audio");
+
+    // Iniciar transmissão
+    ffmpeg()
+      .input(convertedAudioPath)
+      .inputOptions(["-re", "-stream_loop -1"]) // Tempo real + loop
+      .input(convertedVideoPath)
+      .inputOptions(["-re", "-stream_loop -1"])
+      .videoCodec("libx264")
+      .audioCodec("aac")
+      .addOption("-b:v", "2500k")
+      .addOption("-maxrate", "2500k")
+      .addOption("-bufsize", "5000k")
+      .addOption("-b:a", "128k")
+      .addOption("-pix_fmt", "yuv420p")
+      .addOption("-preset", "ultrafast")
+      .addOption("-r", "24")
+      .addOption("-g", "48") // Keyframes a cada 2 segundos
+      .format("flv")
+      .output(`${STREAM_URL}/${STREAM_KEY}`)
+      .on("start", (cmd) => {
+        console.log("Transmissão iniciada. Comando:", cmd);
+      })
+      .on("stderr", (stderrLine) => {
+        console.log("FFmpeg STDERR:", stderrLine);
+      })
+      .on("error", (err) => {
+        console.error("Erro FFmpeg:", err.message);
+      })
+      .on("end", () => {
+        console.log("Transmissão encerrada.");
+      })
+      .run();
+  } catch (error) {
+    console.error("Erro durante a transmissão:", error.message);
+  }
 };
 
 // Função principal para baixar músicas, criar playlist e iniciar o streaming
 const run = async () => {
+  const currentDate = new Date().toISOString().split("T")[0];
+
+  // Limpa a pasta se for um novo dia
+  if (currentDate !== lastDate) {
+    console.log("Novo dia detectado. Limpando a pasta de músicas...");
+    cleanDirectory(OUTPUT_DIR);
+    lastDate = currentDate; // Atualiza o último dia
+  }
+
   if (!fs.existsSync(OUTPUT_DIR)) {
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   }
@@ -240,6 +281,34 @@ const run = async () => {
   }
 };
 
+const convertFile = async (inputPath, outputPath, type) => {
+  return new Promise((resolve, reject) => {
+    const ffmpegCommand = ffmpeg(inputPath);
+
+    if (type === "audio") {
+      ffmpegCommand
+        .audioCodec("libmp3lame")
+        .outputOptions(["-b:a 128k"]); // Mantendo o bitrate para consistência
+    }
+
+    ffmpegCommand
+      .on("start", (cmd) => {
+        console.log("Comando executado pelo FFmpeg:", cmd);
+      })
+      .on("error", (err) => {
+        console.error(`Erro ao converter ${inputPath}:`, err.message);
+        reject(err);
+      })
+      .on("end", () => {
+        console.log(`Arquivo convertido com sucesso: ${outputPath}`);
+        resolve(outputPath);
+      })
+      .save(outputPath);
+  });
+};
+
+
+
 // Agendar para rodar diariamente
-setInterval(run, 1 * 60 * 60 * 1000); // Executa a cada 1 horas
+setInterval(run, 1 * 60 * 60 * 1000); // Executa a cada 1 hora
 run(); // Executa imediatamente na inicialização
