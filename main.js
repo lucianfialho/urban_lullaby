@@ -3,6 +3,7 @@ const path = require("path");
 const axios = require("axios");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmetadata = require("ffmetadata");
+require("dotenv").config()
 
 // Função para normalizar o nome do arquivo em snake_case
 const toSnakeCase = (str) => {
@@ -18,8 +19,8 @@ const OUTPUT_DIR = path.join(
   __dirname,
   `music/playlist_${new Date().toISOString().split("T")[0]}`
 );
-const STREAM_KEY = "fkz1-p7w2-scd0-v5df-csxe";
-const STREAM_URL = "rtmp://a.rtmp.youtube.com/live2";
+const STREAM_KEY = process.env.YOUTUBE_STREAM_KEY;
+const STREAM_URL = process.env.YOUTUBE_STREAM_URL;
 const VIDEO_FILE = path.join(__dirname, "background/video.mp4"); // Video de fundo
 
 // Variável para rastrear o último dia
